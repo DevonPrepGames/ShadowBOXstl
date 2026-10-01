@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShadowBox 6x6 Student Generator</title>
+<style>
+body{font-family:system-ui;margin:0;background:#10141b;color:#eee}main{max-width:1100px;margin:auto;padding:24px}
+.grid{display:grid;grid-template-columns:340px 1fr;gap:18px}.p{background:#1b222d;border:1px solid #394352;border-radius:14px;padding:18px}
+h1{margin:0 0 8px}h2{font-size:18px}label{display:block;margin:12px 0 5px;color:#ccd3dd;font-size:13px}
+input,select,button{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #566273;background:#0e141c;color:#fff}
+button{cursor:pointer;background:#39475a;font-weight:700;margin-top:8px}button.primary{background:#f2a900;color:#111}button:disabled{opacity:.45}
+.preview{display:grid;grid-template-columns:1fr 1fr;gap:12px}canvas{width:100%;background:white;border-radius:8px}
+.spec{white-space:pre-wrap;background:#0c1118;padding:12px;border-radius:8px;font:12px ui-monospace,monospace;margin-top:12px}
+.status{color:#f4c15d;min-height:22px;margin-top:10px;font-size:13px}.note{color:#9aa5b4;font-size:12px;line-height:1.45}
+@media(max-width:800px){.grid,.preview{grid-template-columns:1fr}}
+</style>
+</head>
+<body><main>
+<h1>ShadowBox 6×6 Student Generator</h1>
+<p class="note">Upload a clean black silhouette. The app calculates the rim from the centered-light geometry and creates valid binary STL files locally in the browser.</p>
+<div class="grid">
+<section class="p">
+<h2>Student submission</h2>
+<label>Student / project name</label><input id="name" placeholder="Jordan_Spike">
+<label>Black silhouette</label><input id="file" type="file" accept="image/png,image/jpeg,image/webp">
+<label>Projection distance beyond box (inches)</label><input id="proj" type="number" value="24" min="1" step=".25">
+<label>Profile samples</label><select id="samples"><option>128</option><option selected>256</option><option>384</option><option>512</option></select>
+<button id="go" class="primary" disabled>Generate design</button>
+<button id="all" disabled>Download STL set</button>
+<button id="spec" disabled>Download design spec</button>
+<div id="status" class="status">Upload a silhouette to begin.</div>
+<p class="note"><b>Fixed:</b> 6×6×6 in box, 1/8 in walls, centered light at 1.00 in above the bottom, maximum light diameter 0.25 in.</p>
+<p class="note"><b>Image:</b> solid black subject on white or transparent background. Leave some white margin around the subject.</p>
+</section>
+<section class="p">
+<h2>Preview</h2>
+<div class="preview"><div><div class="note">Submitted image</div><canvas id="src" width="700" height="700"></canvas></div>
+<div><div class="note">Generated rim profile</div><canvas id="prof" width="700" height="700"></canvas></div></div>
+<div id="txt" class="spec"></div>
+</section></div></main>
+<script>
+const MM=25.4,BOX=152.4,T=3.175,BOTTOM=6.35,LIGHT_H=25.4,EPS=.01;
+let img=null,design=null;
+const $=id=>document.getElementById(id),st=s=>$('status').textContent=s;
+function spec(name,p){return `SHADOWBOX_6X6_V02
+
+BOX
+6 × 6 × 6 in
+
+WALL
+1/8 in
+
+LIGHT
+Center
+1.00 in height
+0.25 in max diameter
+
+INTERIOR
+${name}_INTERIOR.png
+
+RIM
+${name}_SILHOUETTE.png
+
+PROJECTION
+${p} in
+
+OUTPUT
+BASE.stl
+WALL_FRONT.stl
+WALL_BACK.stl
+WALL_LEFT.stl
+WALL_RIGHT.stl
+LIGHT_HOLDER.stl`;}
+$('txt').textContent=spec('[student_name]',24);
+
+$('file').onchange=e=>{
+ const f=e.target.files[0];if(!f)return;
+ const u=URL.createObjectURL(f),i=new Image();
+ i.onload=()=>{img=i;drawSource();$('go').disabled=false;st('Image loaded.');URL.revokeObjectURL(u)};
+ i.onerror=()=>st('Could not read image.');i.src=u;
+};
+function drawSource(){
+ const c=$('src'),x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,700,700);
+ const s=Math.min(620/img.width,620/img.height),w=img.width*s,h=img.height*s;
+ x.drawImage(img,(700-w)/2,(700-h)/2,w,h);
+}
+function getMask(){
+ const n=700,c=document.createElement('canvas');c.width=c.height=n;const x=c.getContext('2d');
+ x.fillStyle='#fff';x.fillRect(0,0,n,n);
+ const s=Math.min(620/img.width,620/img.height),w=img.width*s,h=img.height*s;
+ x.drawImage(img,(n-w)/2,(n-h)/2,w,h);
+ return {d:x.getImageData(0,0,n,n).data,n};
+}
+function contour(){
+ const {d,n}=getMask(),black=(x,y)=>x>=0&&y>=0&&x<n&&y<n&&d[(y*n+x)*4]<150;
+ let minX=n,maxX=-1,minY=n,maxY=-1;
+ for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(black(x,y)){minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y)}
+ if(maxX<0)throw Error('No black silhouette found.');
+ const N=+$('samples').value,out=[];
+ for(let i=0;i<N;i++){
+  const x=Math.round(minX+(maxX-minX)*i/(N-1));let top=-1;
+  for(let y=minY;y<=maxY;y++)if(black(x,y)){top=y;break}
+  if(top<0){for(let q=x-1;q>=minX&&top<0;q--)for(let y=minY;y<=maxY;y++)if(black(q,y)){top=y;break}}
+  out.push(top<0?0:(maxY-top)/(maxY-minY||1));
+ }
+ return out;
+}
+function drawProfile(p){
+ const c=$('prof'),x=c.getContext('2d');x.fillStyle='#080b10';x.fillRect(0,0,700,700);
+ x.strokeStyle='#f2a900';x.lineWidth=3;x.beginPath();
+ p.forEach((z,i)=>{let X=35+i*630/(p.length-1),Y=665-(z/BOX)*630;i?x.lineTo(X,Y):x.moveTo(X,Y)});x.stroke();
+ x.strokeStyle='#596579';x.lineWidth=1;x.strokeRect(35,35,630,630);
+}
+function triNormal(a,b,c){
+ const u=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],v=[c[0]-a[0],c[1]-a[1],c[2]-a[2]];
+ const n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]],l=Math.hypot(...n)||1;
+ return n.map(q=>q/l);
+}
+function add(ts,a,b,c){
+ const ab=Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2]),ac=Math.hypot(c[0]-a[0],c[1]-a[1],c[2]-a[2]);
+ if(ab>EPS&&ac>EPS)ts.push([a,b,c]);
+}
+function binarySTL(name,ts){
+ const buf=new ArrayBuffer(84+50*ts.length),dv=new DataView(buf),head=new TextEncoder().encode(('ShadowBox '+name).slice(0,80));
+ new Uint8Array(buf,0,head.length).set(head);dv.setUint32(80,ts.length,true);let o=84;
+ for(const t of ts){const n=triNormal(...t);n.forEach((v,j)=>dv.setFloat32(o+j*4,v,true));o+=12;
+  for(const p of t){p.forEach((v,j)=>dv.setFloat32(o+j*4,v,true));o+=12}dv.setUint16(o,0,true);o+=2;}
+ return new Blob([buf],{type:'model/stl'});
+}
+function box(x0,y0,z0,x1,y1,z1){
+ const p=[[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]];
+ return [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]].map(q=>q.map(i=>p[i]));
+}
+function baseMesh(){return box(0,0,0,BOX,BOX,BOTTOM)}
+/* Closed wall mesh. Each segment is a watertight trapezoidal prism. */
+function wallMesh(profile,side){
+ const ts=[],N=profile.length,step=BOX/(N-1),zfloor=BOTTOM;
+ for(let i=0;i<N-1;i++){
+  const a=i*step,b=(i+1)*step,za=Math.max(38.1,profile[i]),zb=Math.max(38.1,profile[i+1]);
+  let p;
+  if(side==='front')p=[[a,0,zfloor],[b,0,zfloor],[b,0,zb],[a,0,za],[a,T,zfloor],[b,T,zfloor],[b,T,zb],[a,T,za]];
+  if(side==='back')p=[[BOX-b,BOX-T,zfloor],[BOX-a,BOX-T,zfloor],[BOX-a,BOX-T,za],[BOX-b,BOX-T,zb],[BOX-b,BOX,zfloor],[BOX-a,BOX,zfloor],[BOX-a,BOX,za],[BOX-b,BOX,zb]];
+  if(side==='left')p=[[0,a,zfloor],[0,b,zfloor],[0,b,zb],[0,a,za],[T,a,zfloor],[T,b,zfloor],[T,b,zb],[T,a,za]];
+  if(side==='right')p=[[BOX-T,b,zfloor],[BOX-T,a,zfloor],[BOX-T,a,za],[BOX-T,b,zb],[BOX,b,zfloor],[BOX,a,zfloor],[BOX,a,za],[BOX,b,zb]];
+  const f=[[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,4,5],[0,5,1],[3,2,6],[3,6,7],[0,3,7],[0,7,4],[1,5,6],[1,6,2]];
+  f.forEach(q=>add(ts,p[q[0]],p[q[1]],p[q[2]]));
+ }
+ return ts;
+}
+function holderMesh(){
+ const R=3.175,r=2.032,h=12.7,N=48,cx=BOX/2,cy=BOX/2,ts=[];
+ for(let i=0;i<N;i++){const a=2*Math.PI*i/N,b=2*Math.PI*(i+1)/N;
+  const p=[[cx+R*Math.cos(a),cy+R*Math.sin(a),0],[cx+R*Math.cos(b),cy+R*Math.sin(b),0],[cx+R*Math.cos(b),cy+R*Math.sin(b),h],[cx+R*Math.cos(a),cy+R*Math.sin(a),h],
+  [cx+r*Math.cos(a),cy+r*Math.sin(a),0],[cx+r*Math.cos(b),cy+r*Math.sin(b),0],[cx+r*Math.cos(b),cy+r*Math.sin(b),h],[cx+r*Math.cos(a),cy+r*Math.sin(a),h]];
+  [[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,4,5],[0,5,1],[3,2,6],[3,6,7]].forEach(q=>add(ts,p[q[0]],p[q[1]],p[q[2]]));
+ }return ts;
+}
+/* Convert desired projected height into wall height using the centered point-light ray.
+   Wall is 3 inches from the light; receiving plane is 3 inches + projection distance away. */
+function makeProfiles(c,proj){
+ const D=3*MM+proj*MM,t=3*MM/D,profiles={};
+ for(const side of ['front','back','left','right']){
+  profiles[side]=c.map(v=>{
+   const desired=0.5*MM+v*5*MM;
+   const z=LIGHT_H+t*(desired-LIGHT_H);
+   return Math.max(38.1,Math.min(BOX-.05,z));
+  });
+ }return profiles;
+}
+function dl(name,b){const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1500)}
+$('go').onclick=()=>{
+ try{const proj=+$('proj').value;if(!(proj>0))throw Error('Projection distance must be positive.');
+  const name=($('name').value||'Student').trim().replace(/[^\w-]+/g,'_'),c=contour(),p=makeProfiles(c,proj);
+  design={name,proj,p};drawProfile(p.front);$('txt').textContent=spec(name,proj);$('all').disabled=false;$('spec').disabled=false;
+  st('Design generated. All four wall files will be closed binary STL solids.');
+ }catch(e){console.error(e);st(e.message||'Generation failed.')}
+};
+$('all').onclick=()=>{
+ if(!design)return;const n=design.name,p=design.p;
+ const files=[['BASE',baseMesh()],['WALL_FRONT',wallMesh(p.front,'front')],['WALL_BACK',wallMesh(p.back,'back')],['WALL_LEFT',wallMesh(p.left,'left')],['WALL_RIGHT',wallMesh(p.right,'right')],['LIGHT_HOLDER',holderMesh()]];
+ files.forEach(([k,t],i)=>setTimeout(()=>dl(n+'_'+k+'.stl',binarySTL(k,t)),i*300));st('Six STL files queued for download.');
+};
+$('spec').onclick=()=>{if(design)dl(design.name+'_DESIGN_SPEC.txt',new Blob([$('txt').textContent+'\n\nGenerated locally in browser.'],{type:'text/plain'}))};
+</script></body></html>
