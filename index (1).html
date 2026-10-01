@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShadowBox 6×6 V03</title>
+<style>
+:root{--bg:#10151c;--panel:#1b232e;--line:#3b4756;--muted:#aab4c1;--accent:#f2b233}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f4f6f8;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1180px;margin:auto;padding:24px}.grid{display:grid;grid-template-columns:350px 1fr;gap:18px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+h1{margin:0 0 6px}h2{font-size:18px;margin:0 0 12px}.muted,.help{color:var(--muted);font-size:12px;line-height:1.45}
+label{display:block;margin:12px 0 5px;font-size:13px}input,select,button{width:100%;padding:10px;border:1px solid #566273;border-radius:8px;background:#0d131a;color:#fff}
+button{margin-top:8px;font-weight:700;cursor:pointer}button.primary{background:var(--accent);color:#111;border-color:var(--accent)}button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.pre{white-space:pre-wrap;background:#0c1117;border-radius:8px;padding:12px;font:12px ui-monospace,monospace}
+canvas{width:100%;background:#fff;border-radius:9px;display:block}.canv2{background:#0b1016}.preview{display:grid;grid-template-columns:1fr 1fr;gap:12px}.wide{margin-top:12px}
+.status{min-height:24px;color:#f3c66a;font-size:13px;margin-top:10px}.pill{display:inline-block;border:1px solid var(--line);padding:3px 7px;border-radius:999px;font-size:11px;color:#cdd5df}
+@media(max-width:850px){.grid,.preview{grid-template-columns:1fr}}
+</style>
+</head>
+<body><main>
+<h1>ShadowBox 6×6 Student Generator <span class="pill">V03</span></h1>
+<p class="muted">Creates a four-wall ShadowBox from a black silhouette. The image is processed locally in the browser. The rim carries the silhouette as variable-height geometry.</p>
+
+<div class="grid">
+<section class="panel">
+<h2>Project</h2>
+<label>Student / project name</label><input id="name" placeholder="Jordan_Spike">
+<label>Black silhouette image</label><input id="file" type="file" accept="image/png,image/jpeg,image/webp">
+
+<div class="row">
+<div><label>Projection distance (in)</label><input id="proj" type="number" value="8" min="2" max="48" step=".25"></div>
+<div><label>Rim detail samples</label><select id="samples"><option>192</option><option selected>256</option><option>384</option><option>512</option></select></div>
+</div>
+
+<label>Silhouette interpretation</label>
+<select id="mode">
+<option value="fit" selected>Fit silhouette to full 6×6 shadow field</option>
+<option value="margin">Fit with 0.25 in shadow margin</option>
+</select>
+
+<button id="generate" class="primary" disabled>Generate wall geometry</button>
+<button id="downloadAll" disabled>Download all STL files</button>
+<button id="downloadSpec" disabled>Download design spec</button>
+<div id="status" class="status">Upload a silhouette to begin.</div>
+
+<p class="help"><b>Fixed architecture:</b> 6×6×6 in box, 1/8 in walls, centered light at 1.00 in above the bottom. The rim is deliberately given a useful height range so the silhouette is visible in the printed geometry.</p>
+<p class="help"><b>For best results:</b> use a clean black subject on a white/transparent background with the subject filling most of the image.</p>
+</section>
+
+<section class="panel">
+<h2>Geometry preview</h2>
+<div class="preview">
+<div><p class="muted">Uploaded silhouette</p><canvas id="source" width="700" height="700"></canvas></div>
+<div><p class="muted">Calculated rim profile</p><canvas id="profile" class="canv2" width="700" height="700"></canvas></div>
+</div>
+<div class="wide"><p class="muted">Four-wall layout / rim heights</p><canvas id="layout" class="canv2" width="900" height="540"></canvas></div>
+<div id="spec" class="pre wide"></div>
+</section>
+</div>
+</main>
+
+<script>
+const IN=25.4, BOX=6*IN, WALL=0.125*IN, FLOOR=0.25*IN, LIGHT_H=1*IN;
+let sourceImage=null, design=null;
+
+const $=id=>document.getElementById(id);
+const status=s=>$('status').textContent=s;
+
+$('spec').textContent=makeSpec('Student',8);
+
+$('file').addEventListener('change',e=>{
+ const f=e.target.files[0]; if(!f)return;
+ const u=URL.createObjectURL(f), im=new Image();
+ im.onload=()=>{sourceImage=im; drawSource(); $('generate').disabled=false; status('Image loaded.'); URL.revokeObjectURL(u)};
+ im.onerror=()=>status('The image could not be read.');
+ im.src=u;
+});
+
+function drawSource(){
+ const c=$('source'),x=c.getContext('2d');
+ x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);
+ const s=Math.min(620/sourceImage.width,620/sourceImage.height);
+ const w=sourceImage.width*s,h=sourceImage.height*s;
+ x.drawImage(sourceImage,(700-w)/2,(700-h)/2,w,h);
+}
+
+function readSilhouette(){
+ const n=700,c=document.createElement('canvas');c.width=c.height=n;
+ const x=c.getContext('2d',{willReadFrequently:true});
+ x.fillStyle='#fff';x.fillRect(0,0,n,n);
+ const s=Math.min(620/sourceImage.width,620/sourceImage.height);
+ const w=sourceImage.width*s,h=sourceImage.height*s;
+ x.drawImage(sourceImage,(n-w)/2,(n-h)/2,w,h);
+ const d=x.getImageData(0,0,n,n).data;
+ let minX=n,maxX=-1,minY=n,maxY=-1,count=0;
+ for(let y=0;y<n;y++)for(let xx=0;xx<n;xx++){
+   const k=(y*n+xx)*4,r=d[k],g=d[k+1],b=d[k+2],a=d[k+3];
+   if(a>30 && (r+g+b)<390){
+     minX=Math.min(minX,xx);maxX=Math.max(maxX,xx);
+     minY=Math.min(minY,y);maxY=Math.max(maxY,y);count++;
+   }
+ }
+ if(!count)throw Error('No dark silhouette pixels were found.');
+ const W=maxX-minX,H=maxY-minY;
+ if(W<5||H<5)throw Error('The silhouette is too small.');
+ return {d,n,minX,maxX,minY,maxY,W,H};
+}
+
+/* Convert the 2-D silhouette into a height field.
+   The key change from V02 is that the field is sampled across the entire
+   shadow plane, not just as a top contour. Four wall rims are derived from
+   the silhouette boundary at the four edges of that field. */
+function silhouetteField(){
+ const s=readSilhouette(), {d,n,minX,maxX,minY,maxY}=s;
+ const N=+$('samples').value;
+ const field=new Array(N);
+ for(let j=0;j<N;j++){
+   const row=new Float32Array(N);
+   const py=minY+(maxY-minY)*(j/(N-1));
+   const iy=Math.max(minY,Math.min(maxY,Math.round(py)));
+   for(let i=0;i<N;i++){
+     const px=minX+(maxX-minX)*(i/(N-1));
+     const ix=Math.max(minX,Math.min(maxX,Math.round(px)));
+     const k=(iy*n+ix)*4;
+     row[i]=(d[k]+d[k+1]+d[k+2]<390 && d[k+3]>30)?1:0;
+   }
+   field[j]=row;
+ }
+ return {field,N};
+}
+
+/* For each wall, determine how far the black silhouette extends into the
+   shadow field from that wall. That depth becomes rim height. A black pixel
+   close to a wall produces a taller rim; white space produces the baseline. */
+function makeRims(){
+ const {field,N}=silhouetteField();
+ const proj=+$('proj').value*IN;
+ const shadowDistance=3*IN+proj;
+ const margin=$('mode').value==='margin'?0.25*IN:0;
+ const baseline=2.25*IN;
+ const usableTop=5.85*IN;
+ const depthScale=3.1*IN;
+
+ function front(){
+   const a=[];
+   for(let i=0;i<N;i++){
+     let hit=0;
+     for(let j=N-1;j>=0;j--) if(field[j][i]){hit=(N-1-j)/(N-1);break;}
+     a.push(profileHeight(hit));
+   } return a;
+ }
+ function back(){
+   const a=[];
+   for(let i=0;i<N;i++){
+     let hit=0;
+     for(let j=0;j<N;j++) if(field[j][i]){hit=j/(N-1);break;}
+     a.push(profileHeight(hit));
+   } return a;
+ }
+ function left(){
+   const a=[];
+   for(let j=0;j<N;j++){
+     let hit=0;
+     for(let i=0;i<N;i++) if(field[j][i]){hit=i/(N-1);break;}
+     a.push(profileHeight(hit));
+   } return a;
+ }
+ function right(){
+   const a=[];
+   for(let j=0;j<N;j++){
+     let hit=0;
+     for(let i=N-1;i>=0;i--) if(field[j][i]){hit=(N-1-i)/(N-1);break;}
+     a.push(profileHeight(hit));
+   } return a;
+ }
+ function profileHeight(depth){
+   /* Use projection distance as a controlled amplification parameter while
+      retaining a large printable range. */
+   const rayGain=Math.min(1.8,Math.max(.75,12/(shadowDistance/IN)));
+   return Math.max(baseline,Math.min(usableTop,
+     baseline + margin + depth*depthScale*rayGain));
+ }
+ return {front:front(),back:back(),left:left(),right:right(),N};
+}
+
+function smooth(a,passes=2){
+ let b=a.slice();
+ for(let p=0;p<passes;p++){
+  const n=b.slice();
+  for(let i=1;i<b.length-1;i++) n[i]=b[i-1]*.25+b[i]*.5+b[i+1]*.25;
+  b=n;
+ }
+ return b;
+}
+
+function drawProfile(p){
+ const c=$('profile'),x=c.getContext('2d');x.fillStyle='#0b1016';x.fillRect(0,0,700,700);
+ const all=[...p.front,...p.back,...p.left,...p.right],mn=Math.min(...all),mx=Math.max(...all);
+ x.strokeStyle='#465163';x.strokeRect(35,35,630,630);
+ ['front','back','left','right'].forEach((side,k)=>{
+  const a=p[side];x.strokeStyle=['#f2b233','#69b7ff','#82d69b','#e38bff'][k];x.lineWidth=2.5;x.beginPath();
+  a.forEach((z,i)=>{const X=35+i*630/(a.length-1),Y=665-(z-mn)/(mx-mn||1)*630;i?x.lineTo(X,Y):x.moveTo(X,Y)});x.stroke();
+ });
+ x.fillStyle='#ccd4df';x.font='12px system-ui';x.fillText('Front / Back / Left / Right',45,22);
+}
+
+function drawLayout(p){
+ const c=$('layout'),x=c.getContext('2d');x.fillStyle='#0b1016';x.fillRect(0,0,900,540);
+ const ox=180,oy=65,S=350;
+ x.strokeStyle='#647084';x.lineWidth=2;x.strokeRect(ox,oy,S,S);
+ const colors=['#f2b233','#69b7ff','#82d69b','#e38bff'];
+ [['front',ox,oy+S],['back',ox,oy],['left',ox,oy],['right',ox+S,oy]].forEach((q,k)=>{
+  const a=p[q[0]];x.strokeStyle=colors[k];x.lineWidth=3;x.beginPath();
+  a.forEach((z,i)=>{
+    let X,Y;
+    if(q[0]==='front'||q[0]==='back'){X=ox+i*S/(a.length-1);Y=q[0]==='front'?oy+S-z/BOX*S:oy+z/BOX*S}
+    else{Y=oy+i*S/(a.length-1);X=q[0]==='left'?ox+z/BOX*S:ox+S-z/BOX*S}
+    i?x.lineTo(X,Y):x.moveTo(X,Y);
+  });x.stroke();
+ });
+ x.fillStyle='#e8edf3';x.font='14px system-ui';x.fillText('FRONT',ox+145,oy+S+28);x.fillText('BACK',ox+150,oy-14);
+ x.save();x.translate(ox-32,oy+205);x.rotate(-Math.PI/2);x.fillText('LEFT',0,0);x.restore();
+ x.save();x.translate(ox+S+35,oy+330);x.rotate(-Math.PI/2);x.fillText('RIGHT',0,0);x.restore();
+ x.fillStyle='#aab4c1';x.font='12px system-ui';x.fillText('Colored lines show the variable top rim height of each wall.',25,515);
+}
+
+function makeSpec(name,proj){
+ return `SHADOWBOX_6X6_V03
+
+BOX
+6 × 6 × 6 in
+
+WALL
+1/8 in
+
+LIGHT
+Center of box
+1.00 in height
+0.25 in max diameter
+
+INTERIOR
+${name}_INTERIOR.png
+
+RIM
+${name}_SILHOUETTE.png
+
+PROJECTION
+${proj} in
+
+OUTPUT
+BASE.stl
+WALL_FRONT.stl
+WALL_BACK.stl
+WALL_LEFT.stl
+WALL_RIGHT.stl
+LIGHT_HOLDER.stl`;
+}
+
+function tri(a,b,c){
+ const u=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],v=[c[0]-a[0],c[1]-a[1],c[2]-a[2]];
+ const n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
+ const L=Math.hypot(...n)||1;return {a,b,c,n:n.map(q=>q/L)};
+}
+function add(ts,a,b,c){
+ if(Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2])>.001&&Math.hypot(c[0]-a[0],c[1]-a[1],c[2]-a[2])>.001)ts.push(tri(a,b,c));
+}
+function stl(name,ts){
+ const buf=new ArrayBuffer(84+50*ts.length),dv=new DataView(buf);
+ const head=new TextEncoder().encode(('ShadowBox '+name).slice(0,80));new Uint8Array(buf).set(head);
+ dv.setUint32(80,ts.length,true);let o=84;
+ for(const t of ts){
+  t.n.forEach((v,i)=>dv.setFloat32(o+i*4,v,true));o+=12;
+  for(const p of [t.a,t.b,t.c]){p.forEach((v,i)=>dv.setFloat32(o+i*4,v,true));o+=12}
+  dv.setUint16(o,0,true);o+=2;
+ }
+ return new Blob([buf],{type:'model/stl'});
+}
+function prismSegment(a,b,za,zb,side){
+ let p;
+ if(side==='front')p=[[a,0,FLOOR],[b,0,FLOOR],[b,0,zb],[a,0,za],[a,WALL,FLOOR],[b,WALL,FLOOR],[b,WALL,zb],[a,WALL,za]];
+ if(side==='back')p=[[BOX-b,BOX-WALL,FLOOR],[BOX-a,BOX-WALL,FLOOR],[BOX-a,BOX-WALL,za],[BOX-b,BOX-WALL,zb],[BOX-b,BOX,FLOOR],[BOX-a,BOX,FLOOR],[BOX-a,BOX,za],[BOX-b,BOX,zb]];
+ if(side==='left')p=[[0,a,FLOOR],[0,b,FLOOR],[0,b,zb],[0,a,za],[WALL,a,FLOOR],[WALL,b,FLOOR],[WALL,b,zb],[WALL,a,za]];
+ if(side==='right')p=[[BOX-WALL,b,FLOOR],[BOX-WALL,a,FLOOR],[BOX-WALL,a,za],[BOX-WALL,b,zb],[BOX,b,FLOOR],[BOX,a,FLOOR],[BOX,a,za],[BOX,b,zb]];
+ const f=[[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,4,5],[0,5,1],[3,2,6],[3,6,7],[0,3,7],[0,7,4],[1,5,6],[1,6,2]];
+ const ts=[];for(const q of f)add(ts,p[q[0]],p[q[1]],p[q[2]]);return ts;
+}
+function wallMesh(a,side){
+ const ts=[],N=a.length,step=BOX/(N-1),b=smooth(a,1);
+ for(let i=0;i<N-1;i++)ts.push(...prismSegment(i*step,(i+1)*step,b[i],b[i+1],side));
+ return ts;
+}
+function baseMesh(){
+ const z0=0,z1=FLOOR,x0=0,x1=BOX,y0=0,y1=BOX;
+ const p=[[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]];
+ const f=[[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]],ts=[];
+ for(const q of f)add(ts,p[q[0]],p[q[1]],p[q[2]]);return ts;
+}
+function holderMesh(){
+ const cx=BOX/2,cy=BOX/2,R=3.175,r=2.0,h=12.7,N=64,ts=[];
+ for(let i=0;i<N;i++){const a=i*2*Math.PI/N,b=(i+1)*2*Math.PI/N;
+  const p=[[cx+R*Math.cos(a),cy+R*Math.sin(a),0],[cx+R*Math.cos(b),cy+R*Math.sin(b),0],[cx+R*Math.cos(b),cy+R*Math.sin(b),h],[cx+R*Math.cos(a),cy+R*Math.sin(a),h],
+  [cx+r*Math.cos(a),cy+r*Math.sin(a),0],[cx+r*Math.cos(b),cy+r*Math.sin(b),0],[cx+r*Math.cos(b),cy+r*Math.sin(b),h],[cx+r*Math.cos(a),cy+r*Math.sin(a),h]];
+  [[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,4,5],[0,5,1],[3,2,6],[3,6,7]].forEach(q=>add(ts,p[q[0]],p[q[1]],p[q[2]]));
+ }return ts;
+}
+function download(name,blob){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000)}
+
+$('generate').onclick=()=>{
+ try{
+  const proj=+$('proj').value;if(!(proj>=2&&proj<=48))throw Error('Projection distance must be between 2 and 48 inches.');
+  const name=($('name').value||'Student').trim().replace(/[^\w-]+/g,'_');
+  const p=makeRims();design={name,proj,p};
+  drawProfile(p);drawLayout(p);
+  $('spec').textContent=makeSpec(name,proj);$('downloadAll').disabled=false;$('downloadSpec').disabled=false;
+  const all=[...p.front,...p.back,...p.left,...p.right];
+  status(`Generated. Rim heights: ${Math.min(...all).toFixed(1)}–${Math.max(...all).toFixed(1)} mm. Four walls contain variable top geometry.`);
+ }catch(e){console.error(e);status(e.message||'Generation failed.')}
+};
+
+$('downloadAll').onclick=()=>{
+ if(!design)return;
+ const n=design.name,p=design.p;
+ const files=[
+  [`${n}_BASE.stl`,baseMesh()],
+  [`${n}_WALL_FRONT.stl`,wallMesh(p.front,'front')],
+  [`${n}_WALL_BACK.stl`,wallMesh(p.back,'back')],
+  [`${n}_WALL_LEFT.stl`,wallMesh(p.left,'left')],
+  [`${n}_WALL_RIGHT.stl`,wallMesh(p.right,'right')],
+  [`${n}_LIGHT_HOLDER.stl`,holderMesh()]
+ ];
+ files.forEach((f,i)=>setTimeout(()=>download(f[0],stl(f[0],f[1])),i*350));
+ status('Six STL files queued. The wall profiles now contain visible variable-height rim geometry.');
+};
+
+$('downloadSpec').onclick=()=>{
+ if(!design)return;
+ download(design.name+'_DESIGN_SPEC.txt',new Blob([$('spec').textContent],{type:'text/plain'}));
+};
+</script>
+</body>
+</html>
